@@ -1,3 +1,6 @@
+# This script implements a Genetic Algorithm for optimizing shrimp feeding
+# schedules based on environmental conditions and growth targets. The model uses
+# a 7-day optimization window that can be repeated weekly.
 from pathlib import Path
 import random
 
@@ -13,8 +16,8 @@ OUTPUT_DIR = Path("outputs")
 POPULATION_SIZE = 120
 GENERATIONS = 200
 CHROMOSOME_LENGTH = 7
-# This is a short-term feeding optimization window, not the full grow-out cycle.
-# In practice, the 7-day optimizer can be repeated weekly as new pond data arrives.
+# Chromosome = one complete 7-day feeding schedule.
+# Gene = one daily feed amount in grams within that schedule.
 MIN_FEED = 50.0
 MAX_FEED = 180.0
 CROSSOVER_RATE = 0.85
@@ -28,6 +31,9 @@ RANDOM_SEED = 42
 
 
 def _environment_score(data):
+    """Convert water quality values into one feeding-suitability score."""
+    # environment_score summarizes temperature, pH, and dissolved oxygen.
+    # Higher values mean pond conditions are safer for stronger feeding.
     temperature_score = 1 - (np.abs(data["temperature"] - 28.0) / 5.0)
     ph_score = 1 - (np.abs(data["pH"] - 7.8) / 1.2)
     oxygen_score = (data["dissolved_oxygen"] - 4.0) / 4.0
@@ -45,7 +51,12 @@ def load_data(
     measurement_path=MEASUREMENT_DATA_PATH,
     chromosome_length=CHROMOSOME_LENGTH,
 ):
-    """Load and prepare aquaculture environment data and shrimp ABW targets."""
+    """Load IoT water data and shrimp measurements for the GA model.
+
+    The IoT data provides daily temperature, pH, and dissolved oxygen values.
+    Shrimp measurements provide the baseline ABW and target ABW used to score
+    each candidate feeding schedule.
+    """
     iot_data = pd.read_excel(iot_path)
     measurements = pd.read_csv(measurement_path)
 
@@ -66,6 +77,7 @@ def load_data(
     if missing_measurements:
         raise ValueError(f"Missing measurement columns: {missing_measurements}")
 
+    # Convert hourly IoT sensor readings into daily pond-condition records.
     iot_data = iot_data[required_iot_columns].copy()
     iot_data["Datetime"] = pd.to_datetime(iot_data["Datetime"], errors="coerce")
     iot_data = iot_data.dropna(subset=["Datetime"])
@@ -83,6 +95,7 @@ def load_data(
     sample_indexes = np.linspace(
         0, len(daily_environment) - 1, chromosome_length, dtype=int
     )
+    # Select one environmental record for each gene in the 7-day chromosome.
     environment_data = daily_environment.iloc[sample_indexes].copy()
 
     if len(environment_data) < chromosome_length:
@@ -96,6 +109,7 @@ def load_data(
     measurements["normalized_treatment"] = (
         measurements["treatment"].astype(str).str.strip().str.lower()
     )
+    # No-treatment ABW is the starting point; with-treatment ABW is the target.
     with_treatment = measurements[
         measurements["normalized_treatment"].eq("with treatment")
     ]
@@ -115,6 +129,8 @@ def load_data(
     environment_data["baseline_abw"] = baseline_abw
     environment_data["target_abw"] = target_abw
     environment_data["fixed_feed"] = FIXED_FEED_AMOUNT
+    # safe_feed_limit lowers allowable feeding when water conditions are weaker.
+    # This helps the GA avoid overfeeding that may increase waste and cost.
     environment_data["safe_feed_limit"] = FIXED_FEED_AMOUNT * (
         0.65 + 0.50 * environment_data["environment_score"]
     )
@@ -141,7 +157,8 @@ def initialize_population(
     min_feed=MIN_FEED,
     max_feed=MAX_FEED,
 ):
-    """Create random feeding schedules."""
+    """Create the first generation of possible 7-day feeding schedules."""
+    # Each row is one candidate solution; each column is one daily feed gene.
     return np.random.uniform(
         min_feed,
         max_feed,
@@ -150,18 +167,25 @@ def initialize_population(
 
 
 def simulate_schedule(chromosome, data):
-    """Estimate daily ABW response for one feeding schedule."""
+    """Estimate shrimp ABW growth for one candidate feeding schedule.
+
+    Daily growth depends on the feed amount and the environment score. The
+    simulation rewards balanced feeding and penalizes feeding above the safe
+    limit when water conditions are less suitable.
+    """
     chromosome = np.asarray(chromosome, dtype=float)
     current_abw = float(data["baseline_abw"].iloc[0])
     growth_trend = [current_abw]
 
     for feed, (_, row) in zip(chromosome, data.iterrows()):
         environment_score = row["environment_score"]
+        # Better water conditions allow a higher effective feeding target.
         optimal_feed = 95.0 + 45.0 * environment_score
         feed_ratio = feed / optimal_feed
         if feed_ratio <= 1:
             feed_response = feed_ratio
         else:
+            # Overfeeding gives less growth benefit and may harm pond quality.
             feed_response = max(0.65, 1 - 0.55 * (feed_ratio - 1))
         overfeed_ratio = max(feed - row["safe_feed_limit"], 0) / MAX_FEED
         daily_gain = 0.38 * environment_score * feed_response
@@ -173,7 +197,12 @@ def simulate_schedule(chromosome, data):
 
 
 def fitness_function(chromosome, data):
-    """Score a schedule using growth, feed use, feed cost, and environmental penalties."""
+    """Score a feeding schedule by balancing farm goals.
+
+    The fitness value rewards higher estimated ABW and reaching the growth
+    target. It subtracts penalties for feed usage, feed cost, excess feeding,
+    and feeding heavily during weaker water conditions.
+    """
     chromosome = np.asarray(chromosome, dtype=float)
     growth_trend = simulate_schedule(chromosome, data)
     final_abw = growth_trend[-1]
@@ -186,6 +215,7 @@ def fitness_function(chromosome, data):
     target_gap = max(target_abw - final_abw, 0)
     target_bonus = 35.0 if final_abw >= target_abw else 0.0
 
+    # Higher fitness means a better trade-off between growth, cost, and safety.
     fitness = (
         final_abw * 90.0
         + target_bonus
@@ -199,7 +229,9 @@ def fitness_function(chromosome, data):
 
 
 def selection(population, fitness_scores, tournament_size=TOURNAMENT_SIZE):
-    """Select one parent using tournament selection."""
+    """Choose a strong parent schedule using tournament selection."""
+    # Tournament selection keeps pressure toward better feeding plans while
+    # still allowing different schedules to compete.
     contender_indexes = np.random.choice(
         len(population), size=tournament_size, replace=False
     )
@@ -208,10 +240,11 @@ def selection(population, fitness_scores, tournament_size=TOURNAMENT_SIZE):
 
 
 def crossover(parent_one, parent_two, crossover_rate=CROSSOVER_RATE):
-    """Create two children using single-point crossover."""
+    """Combine two parent schedules to create new feeding schedules."""
     if random.random() > crossover_rate or len(parent_one) < 2:
         return parent_one.copy(), parent_two.copy()
 
+    # A crossover point swaps part of the weekly feeding pattern between parents.
     point = random.randint(1, len(parent_one) - 1)
     child_one = np.concatenate([parent_one[:point], parent_two[point:]])
     child_two = np.concatenate([parent_two[:point], parent_one[point:]])
@@ -224,17 +257,23 @@ def mutation(
     min_feed=MIN_FEED,
     max_feed=MAX_FEED,
 ):
-    """Randomly adjust feed values in a chromosome."""
+    """Randomly adjust daily feed genes to explore new feeding options."""
     mutated = chromosome.copy()
     for index in range(len(mutated)):
         if random.random() < mutation_rate:
+            # Mutation helps the GA discover schedules not found by crossover.
             mutated[index] += np.random.normal(0, 12)
             mutated[index] = np.clip(mutated[index], min_feed, max_feed)
     return mutated
 
 
 def run_ga(data, seed=RANDOM_SEED, verbose=False, progress_interval=20):
-    """Run the Genetic Algorithm and return the best schedule and history."""
+    """Evolve feeding schedules over generations to find an optimal plan.
+
+    The GA repeatedly scores, selects, crosses over, and mutates candidate
+    schedules until it finds a strong 7-day feeding plan for the given shrimp
+    and water-condition data.
+    """
     np.random.seed(seed)
     random.seed(seed)
 
@@ -249,6 +288,7 @@ def run_ga(data, seed=RANDOM_SEED, verbose=False, progress_interval=20):
     best_overall_fitness = -np.inf
 
     for generation in range(GENERATIONS):
+        # Evaluate every candidate schedule using the shrimp-feeding objective.
         fitness_scores = np.array(
             [fitness_function(chromosome, data) for chromosome in population]
         )
@@ -287,10 +327,12 @@ def run_ga(data, seed=RANDOM_SEED, verbose=False, progress_interval=20):
         if generation_number == GENERATIONS:
             break
 
+        # Elitism preserves the best schedules so good solutions are not lost.
         elite_indexes = np.argsort(fitness_scores)[-ELITISM_COUNT:]
         new_population = [population[index].copy() for index in elite_indexes]
 
         while len(new_population) < POPULATION_SIZE:
+            # New schedules are created from selected parents, then mutated.
             parent_one = selection(population, fitness_scores)
             parent_two = selection(population, fitness_scores)
             child_one, child_two = crossover(parent_one, parent_two)
@@ -304,6 +346,7 @@ def run_ga(data, seed=RANDOM_SEED, verbose=False, progress_interval=20):
 
 
 def _schedule_metrics(schedule, data, label):
+    """Summarize feed use, cost, ABW, and target status for one schedule."""
     growth_trend = simulate_schedule(schedule, data)
     total_feed = float(np.sum(schedule))
     final_abw = float(growth_trend[-1])
@@ -324,7 +367,9 @@ def _schedule_metrics(schedule, data, label):
 
 
 def compare_with_fixed_schedule(best_schedule, data):
-    """Compare the GA schedule against a traditional fixed feeding schedule."""
+    """Compare the GA schedule with a traditional fixed feeding baseline."""
+    # The fixed baseline represents feeding the same amount every day.
+    # This shows whether GA adjustment improves feed use and estimated growth.
     fixed_schedule = np.full(len(data), FIXED_FEED_AMOUNT)
     comparison = pd.DataFrame(
         [
@@ -336,13 +381,11 @@ def compare_with_fixed_schedule(best_schedule, data):
 
 
 def run_weekly_optimization(weekly_data, seed=RANDOM_SEED):
-    """Demonstrate how the 7-day optimizer can be repeated over time.
+    """Repeat the short-term 7-day GA model across weekly data windows.
 
-    The 7-day schedule represents a short-term feeding optimization window,
-    not the entire shrimp grow-out period. In actual aquaculture, feeding
-    decisions are adjusted daily or weekly. Therefore, this 7-day GA schedule
-    can be repeatedly applied over multiple weeks as new environmental and
-    shrimp growth data become available.
+    The 7-day schedule is not the entire shrimp grow-out period. It is a
+    short-term feeding window that can be rerun each week as new pond water
+    data and shrimp growth observations become available.
     """
     if isinstance(weekly_data, pd.DataFrame):
         weekly_data = [weekly_data]
@@ -374,7 +417,7 @@ def run_weekly_optimization(weekly_data, seed=RANDOM_SEED):
 
 
 def plot_results(best_schedule, history, data, output_dir=OUTPUT_DIR):
-    """Create result graphs for the GA run."""
+    """Create charts for GA learning, feeding decisions, and ABW trends."""
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -425,6 +468,7 @@ def plot_results(best_schedule, history, data, output_dir=OUTPUT_DIR):
 
 
 if __name__ == "__main__":
+    # Run the full workflow: load data, optimize feeding, compare, and save outputs.
     data = load_data()
     print("Running SmartShrimp Genetic Algorithm optimizer...\n")
     print("Optimization window: 7 days (repeatable as new weekly data becomes available)\n")
