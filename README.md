@@ -2,7 +2,7 @@
 
 SmartShrimp is a smart agriculture and aquaculture AI project that uses a Genetic Algorithm (GA) to optimize shrimp feeding decisions.
 
-The project focuses on a **7-day feeding optimization window**. This does not represent the full shrimp grow-out cycle, which normally takes several months. Instead, the 7-day schedule is treated as a short-term feeding management plan that can be repeated weekly as new water-quality and shrimp-growth data become available.
+The project focuses on a **7-day consecutive feeding optimization window**. This does not represent the full shrimp grow-out cycle, which normally takes several months. Instead, the 7-day schedule is treated as a short-term feeding management plan that can be repeated weekly as new water-quality and shrimp-growth data become available.
 
 ## Project Objective
 
@@ -31,7 +31,7 @@ The no-treatment shrimp ABW is used as the baseline starting condition. The with
 
 ## Genetic Algorithm Method
 
-The GA searches for a good 7-day feeding schedule.
+The GA searches for a good 7-day feeding schedule using consecutive daily water-condition records. By default, the script uses the latest available 7-day window in the IoT dataset. A specific window can be selected by passing `window_start` to `load_data()`.
 
 - **Chromosome:** one complete 7-day feeding schedule
 - **Gene:** feed amount for one day
@@ -44,11 +44,28 @@ The GA searches for a good 7-day feeding schedule.
 
 The optimized GA schedule is compared with a fixed feeding schedule that gives the same feed amount every day.
 
+## Algorithms Used
+
+The project uses the following algorithms and evaluation methods:
+
+- **Genetic Algorithm (GA):** main optimization algorithm used to search for an improved 7-day shrimp feeding schedule.
+- **Fitness-based optimization:** each candidate schedule is scored using estimated final ABW, target gap, total feed used, feed cost, excess feed, and water-condition penalties.
+- **Tournament selection:** parent schedules are selected by randomly sampling candidate schedules and choosing the strongest candidate from each tournament.
+- **Single-point crossover:** two parent schedules exchange part of their 7-day feed pattern at one crossover point to create new child schedules.
+- **Gaussian mutation:** individual daily feed values are randomly adjusted using normally distributed noise, then clipped within the allowed feed range.
+- **Elitism:** the best schedules from each generation are preserved so strong solutions are not lost during crossover and mutation.
+- **Environment scoring:** temperature, pH, and dissolved oxygen are converted into a 0-to-1 water-condition score that affects safe feeding limits and fitness penalties.
+- **Growth simulation:** each candidate schedule is simulated over the 7-day window to estimate final average body weight (ABW).
+- **Fixed-schedule baseline comparison:** the GA schedule is compared against a fixed 150 g/day feeding schedule.
+- **Rolling 7-day window evaluation:** the GA is tested across every possible consecutive 7-day window in the IoT dataset to measure average feed savings, ABW improvement, and fitness improvement.
+
 ## Short-Term Optimization Concept
 
 The 7-day schedule represents a short-term feeding optimization window, not the full shrimp grow-out cycle. In actual aquaculture, feeding decisions may be adjusted daily or weekly. Therefore, this 7-day GA schedule can be repeatedly applied across the grow-out period as new water-quality and shrimp-growth data become available.
 
 The script includes `run_weekly_optimization()` to demonstrate how the same 7-day optimizer can be reused over time with updated weekly data.
+
+The script also includes `run_rolling_window_analysis()` to evaluate every possible consecutive 7-day window in the IoT dataset. With the current 183 daily records, this tests 177 rolling windows. This prevents the project result from depending only on one selected week and gives stronger evidence about average feed savings, ABW improvement, and fitness improvement across the available data period.
 
 ## Growth Target Status
 
@@ -94,6 +111,11 @@ Running the notebook or script saves results in the `outputs/` folder:
 - `outputs/feeding_schedule_comparison.png`: 7-day GA feeding window vs fixed schedule
 - `outputs/estimated_growth_trend.png`: estimated ABW trend during the 7-day optimization window
 - `outputs/abw_treatment_comparison.png`: EDA chart comparing ABW by treatment group
+- `outputs/rolling_window_comparison.csv`: GA vs fixed-feeding metrics for every consecutive 7-day window
+- `outputs/rolling_window_summary.csv`: high-level summary of all rolling-window results
+- `outputs/rolling_window_feed_savings.png`: feed savings across all tested 7-day windows
+- `outputs/rolling_window_environment_vs_savings.png`: relationship between water-condition score and GA feed savings
+- `outputs/rolling_window_savings_distribution.png`: distribution of feed savings across all tested windows
 
 ## Project Notes
 

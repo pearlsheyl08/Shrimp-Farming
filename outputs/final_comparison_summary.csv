@@ -1,3 +1,3 @@
 schedule,total_feed_used_g,estimated_final_abw_g,feed_cost,fitness_score,growth_target_status
-GA Optimized Feeding,926.3822516750165,22.141487485519537,25.70710748398171,1898.07217584093,Target Growth Achieved
-Fixed Feeding Schedule,1050.0,21.98268271028029,29.1375,1865.6822463290723,Target Growth Achieved
+GA Optimized Feeding,953.175195605163,22.366062672727274,26.450611678043273,1923.8898888374426,Target Growth Achieved
+Fixed Feeding Schedule,1050.0,22.23046425373525,29.1375,1899.0842828361724,Target Growth Achieved
